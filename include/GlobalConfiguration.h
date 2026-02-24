@@ -2,6 +2,7 @@
 #define GLOBALCONFIGURATION_H_
 
 #include "peripherals/Controller.h"
+#include "peripherals/DigitalInputs.h"
 #include "peripherals/Display.h"
 #include "peripherals/Drum.h"
 #include "peripherals/StatusLed.h"
@@ -115,6 +116,13 @@ const Peripherals::Controller::Config controller_config = {
                     .address = 0x20,
                 },
         },
+};
+
+const Peripherals::DigitalInputs::Config digital_inputs_config = {
+    .gp0_pin = 0,
+    .gp1_pin = 1,
+    .gp2_pin = 2,
+    .debounce_delay_ms = 25,
 };
 
 const Peripherals::StatusLed::Config led_config = {

@@ -185,8 +185,8 @@ usb_report_t InputReport::getXinputBaseReport(const InputState &state) {
                                | (controller.dpad.right ? (1 << 3) : 0)     // Dpad Right
                                | (controller.buttons.start ? (1 << 4) : 0)  // Start
                                | (controller.buttons.select ? (1 << 5) : 0) // Select
-                               | (false ? (1 << 6) : 0)                     // L3
-                               | (false ? (1 << 7) : 0);                    // R3
+                               | (state.digital_inputs.gp0 ? (1 << 6) : 0)   // L3
+                               | (state.digital_inputs.gp1 ? (1 << 7) : 0); // R3
     m_xinput_report.buttons2 = 0                                            //
                                | (controller.buttons.l ? (1 << 0) : 0)      // L1
                                | (controller.buttons.r ? (1 << 1) : 0)      // R1
@@ -195,6 +195,8 @@ usb_report_t InputReport::getXinputBaseReport(const InputState &state) {
                                | (controller.buttons.east ? (1 << 5) : 0)   // B
                                | (controller.buttons.west ? (1 << 6) : 0)   // X
                                | (controller.buttons.north ? (1 << 7) : 0); // Y
+
+    m_xinput_report.lt = (state.digital_inputs.gp2 ? 0xFF : 0);
 
     return {reinterpret_cast<uint8_t *>(&m_xinput_report), sizeof(xinput_report_t)};
 }

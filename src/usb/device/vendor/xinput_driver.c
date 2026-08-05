@@ -3,8 +3,6 @@
 #include "device/usbd_pvt.h"
 #include "tusb.h"
 
-#include <stdlib.h>
-
 const tusb_desc_device_t xinput_desc_device = {
     .bLength = sizeof(tusb_desc_device_t),
     .bDescriptorType = TUSB_DESC_DEVICE,
@@ -84,7 +82,14 @@ bool send_xinput_report(usb_report_t report) {
         return false;
     }
 
-    TU_VERIFY(usbd_edpt_claim(0, xinput_itf.ep_in));
+    if (!usbd_edpt_claim(0, xinput_itf.ep_in)) {
+        // The endpoint is idle but still claimed, so a previous attempt was abandoned
+        // between claiming the endpoint and starting the transfer. Nothing else will
+        // ever release it again and every following claim would fail, leaving the
+        // controller enumerated but permanently mute. Release it and retry next cycle.
+        usbd_edpt_release(0, xinput_itf.ep_in);
+        return false;
+    }
 
     uint16_t size = tu_min16(report.size, TUD_XINPUT_EP_BUFSIZE);
     memcpy(xinput_itf.epin_buf, report.data, size);
@@ -116,15 +121,19 @@ static bool receive_xinput_report(uint8_t const *buf, uint32_t size) {
         ALL_BLINK_ONCE = 0x0F,
     };
 
-    hid_xinput_ouput_report_t *report = (hid_xinput_ouput_report_t *)buf;
+    // Both report types carry their payload in the third byte, anything shorter
+    // (including the zero length packets the host may send) is not ours to parse.
+    if (size < 3) {
+        return false;
+    }
+
+    const hid_xinput_ouput_report_t *report = (const hid_xinput_ouput_report_t *)buf;
 
     switch (report->type) {
     case REPORT_RUMBLE:
         // Ignore, we ain't doing that
         return true;
     case REPORT_LED: {
-        TU_ASSERT(size >= 3);
-
         usb_player_led_t player_led = {.type = USB_PLAYER_LED_ID, .id = 0};
 
         switch (report->led) {
@@ -163,13 +172,17 @@ static bool receive_xinput_report(uint8_t const *buf, uint32_t size) {
             break;
         }
 
-        usbd_driver_get_player_led_cb()(player_led);
+        const usbd_player_led_cb_t player_led_cb = usbd_driver_get_player_led_cb();
+        if (player_led_cb) {
+            player_led_cb(player_led);
+        }
+        break;
     }
     default:
         break;
     }
 
-    return false;
+    return true;
 }
 
 static void xinput_reset(uint8_t rhport) {
@@ -222,18 +235,24 @@ bool xinput_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_request_
         return false;
     }
 
-    uint8_t *dummy_data = calloc(request->wLength, sizeof(uint8_t));
-    bool success = tud_control_xfer(rhport, request, (void *)dummy_data, request->wLength);
-    free(dummy_data);
+    // Answer from a static buffer rather than the heap: tud_control_xfer() keeps the
+    // pointer for the whole data stage, so a heap buffer freed right after the call
+    // would be read after it was freed for anything longer than a single packet. On
+    // top of that, wLength is host controlled and an allocation failure panics.
+    static uint8_t dummy_data[CFG_TUD_ENDPOINT0_SIZE] = {};
 
-    return success;
+    return tud_control_xfer(rhport, request, dummy_data, tu_min16(request->wLength, sizeof(dummy_data)));
 }
 
 static bool xinput_xfer_cb(uint8_t rhport, uint8_t ep_addr, xfer_result_t result, uint32_t xferred_bytes) {
-    TU_ASSERT(result == XFER_RESULT_SUCCESS);
-
     if (ep_addr == xinput_itf.ep_out) {
-        receive_xinput_report(xinput_itf.epout_buf, xferred_bytes);
+        if (result == XFER_RESULT_SUCCESS) {
+            receive_xinput_report(xinput_itf.epout_buf, xferred_bytes);
+        }
+
+        // Re-arm unconditionally. Bailing out on a failed transfer would leave the
+        // endpoint unarmed forever, so every following LED or rumble packet from the
+        // host gets NAKed until its driver gives up on the device.
         TU_ASSERT(usbd_edpt_xfer(rhport, xinput_itf.ep_out, xinput_itf.epout_buf, sizeof(xinput_itf.epout_buf)));
     }
 

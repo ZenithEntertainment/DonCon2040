@@ -9,6 +9,9 @@
 #include "usb/device/vendor/xinput_driver.h"
 
 #include "bsp/board.h"
+#include "device/dcd.h"
+#include "hardware/structs/usb.h"
+#include "pico/time.h"
 #include "pico/unique_id.h"
 #include "tusb.h"
 
@@ -71,20 +74,59 @@ void usbd_driver_init(usb_mode_t mode) {
     tud_init(BOARD_TUD_RHPORT);
 }
 
-void usbd_driver_task() { tud_task(); }
+// The RP2040 raises a suspend interrupt after roughly 3ms of bus inactivity and, because
+// its TinyUSB port forces VBUS detection on, cannot tell a suspended bus apart from a
+// disconnected one (RP2040 datasheet 4.1.2.6.4). A brief glitch on the bus is therefore
+// enough to latch TinyUSB into the suspended state, where tud_ready() stays false and
+// every report is dropped, while the host still sees an enumerated - but permanently
+// mute - controller.
+//
+// The device cannot get out of this on its own: none of the controller descriptors
+// advertise remote wakeup, so the host never enables it and tud_remote_wakeup() returns
+// without doing anything, and the host has no reason to send a resume for a suspend it
+// never initiated. The frame counter settles it: if start of frame packets keep coming
+// in, the bus is alive and the suspend was spurious, so drop the latch.
+static void check_spurious_suspend() {
+    static uint16_t last_frame = 0;
+
+    const uint16_t frame = (uint16_t)(usb_hw->sof_rd & USB_SOF_RD_COUNT_BITS);
+    if (frame == last_frame) {
+        return;
+    }
+    last_frame = frame;
+
+    if (tud_suspended()) {
+        dcd_event_bus_signal(BOARD_TUD_RHPORT, DCD_EVENT_RESUME, false);
+    }
+}
+
+void usbd_driver_task() {
+    check_spurious_suspend();
+
+    tud_task();
+}
 
 usb_mode_t usbd_driver_get_mode() { return usbd_mode; }
 
 void usbd_driver_send_report(usb_report_t report) {
     static const uint64_t interval_us = 900;
-    static uint64_t start_us = 0;
+    static uint64_t next_us = 0;
 
-    if (to_us_since_boot(get_absolute_time()) - start_us <= interval_us) {
+    const uint64_t now_us = to_us_since_boot(get_absolute_time());
+    if (now_us < next_us) {
         return;
     }
-    start_us += interval_us;
+    next_us += interval_us;
+    if (next_us < now_us) {
+        // Resync after a stall instead of catching up, which would send a burst of
+        // reports as fast as the main loop can produce them.
+        next_us = now_us + interval_us;
+    }
 
     if (tud_suspended()) {
+        // Only effective once a host has enabled remote wakeup, which it will not do
+        // as long as the configuration descriptors don't advertise the capability.
+        // check_spurious_suspend() is what actually recovers a stuck suspend.
         tud_remote_wakeup();
     }
 

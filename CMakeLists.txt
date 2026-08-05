@@ -13,7 +13,13 @@ include(pico_sdk_import.cmake)
 
 project(DonCon2040 VERSION 0.39.0)
 
-set(PICO_USE_FASTEST_SUPPORTED_CLOCK 1)
+# On RP2040 this runs clk_sys at 200MHz against a 133MHz datasheet maximum, and the
+# SDK only raises the core voltage to match on RP2350 (SYS_CLK_VREG_VOLTAGE_MIN is not
+# defined for RP2040). Overridable so a build can be pinned to the in-spec 125MHz with
+# -DPICO_USE_FASTEST_SUPPORTED_CLOCK=0 when chasing intermittent faults.
+if(NOT DEFINED PICO_USE_FASTEST_SUPPORTED_CLOCK)
+  set(PICO_USE_FASTEST_SUPPORTED_CLOCK 1)
+endif()
 
 pico_sdk_init()
 

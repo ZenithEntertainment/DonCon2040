@@ -136,8 +136,6 @@ int main() {
     queue_init(&auth_challenge_queue, sizeof(std::array<uint8_t, Utils::PS4AuthProvider::SIGNATURE_LENGTH>), 1);
     queue_init(&auth_signed_challenge_queue, sizeof(std::array<uint8_t, Utils::PS4AuthProvider::SIGNATURE_LENGTH>), 1);
 
-    stdio_init_all();
-
     Peripherals::Drum drum(Config::Default::drum_config);
 
     Utils::InputReport input_report;
@@ -191,6 +189,11 @@ int main() {
     multicore_launch_core1(core1_task);
 
     usbd_driver_init(mode);
+
+    // Has to happen after usbd_driver_init(), pico_stdio_usb expects TinyUSB to be
+    // initialized already when the application drives the device stack itself.
+    stdio_init_all();
+
     usbd_driver_set_player_led_cb([](usb_player_led_t player_led) {
         const auto ctrl_message =
             ControlMessage{.command = ControlCommand::SetPlayerLed, .data = {.player_led = player_led}};

@@ -47,7 +47,13 @@ int64_t Mcp3204Dma::alarmHandler(alarm_id_t id, void *user_data) {
 void Mcp3204Dma::triggerDmaRead() {
     gpio_put(m_cs_pin, true);
 
-    add_alarm_in_us(2, alarmHandler, nullptr, true);
+    if (add_alarm_in_us(2, alarmHandler, nullptr, true) < 0) {
+        // No alarm slot was available. Dropping the read here would break the chain
+        // that keeps conversions going and freeze all inputs, so wait out the CS high
+        // time and start the transfer directly instead.
+        busy_wait_us(2);
+        alarmHandler(0, nullptr);
+    }
 }
 
 void Mcp3204Dma::dmaReadHandler() {

@@ -1,4 +1,5 @@
 #include "peripherals/Controller.h"
+#include "peripherals/DigitalInputs.h"
 #include "peripherals/Display.h"
 #include "peripherals/Drum.h"
 #include "peripherals/StatusLed.h"
@@ -137,6 +138,7 @@ int main() {
     queue_init(&auth_signed_challenge_queue, sizeof(std::array<uint8_t, Utils::PS4AuthProvider::SIGNATURE_LENGTH>), 1);
 
     Peripherals::Drum drum(Config::Default::drum_config);
+    Peripherals::DigitalInputs digital_inputs(Config::Default::digital_inputs_config);
 
     Utils::InputReport input_report;
     Utils::InputState input_state;
@@ -204,6 +206,7 @@ int main() {
 
     while (true) {
         drum.updateInputState(input_state);
+        digital_inputs.updateInputState(input_state);
         queue_try_remove(&controller_input_queue, &input_state.controller);
 
         const auto drum_message = input_state.drum;

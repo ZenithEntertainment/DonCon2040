@@ -34,12 +34,18 @@ struct InputState {
         Buttons buttons;
     };
 
+    struct DigitalInputs {
+        bool gp0, gp1, gp2;
+    };
+
     Drum drum{};
     Controller controller{};
+    DigitalInputs digital_inputs{};
 
     void releaseAll() {
         drum = {};
         controller = {};
+        digital_inputs = {};
     };
 };
 

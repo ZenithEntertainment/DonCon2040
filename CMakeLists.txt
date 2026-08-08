@@ -62,6 +62,17 @@ target_link_libraries(
          mcp23017
          mcp3204)
 
+# Errata 5: on B0/B1 silicon the USB device needs 800us of idle line state after a bus
+# reset before it moves to the connected state, which it does not get behind a hub that
+# is broadcasting packets for another device - so enumeration fails and the host reports
+# the controller as gone. The pico-sdk leaves the workaround off by default. It costs
+# nothing on B2 and later, where rp2040_usb_device_enumeration_fix() checks the chip
+# revision and returns immediately.
+if(PICO_PLATFORM STREQUAL "rp2040")
+  target_compile_definitions(${PROJECT_NAME}
+                             PUBLIC PICO_RP2040_USB_DEVICE_ENUMERATION_FIX=1)
+endif()
+
 pico_enable_stdio_usb(${PROJECT_NAME} 1)
 pico_enable_stdio_uart(${PROJECT_NAME} 0)
 

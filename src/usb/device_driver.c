@@ -74,6 +74,13 @@ void usbd_driver_init(usb_mode_t mode) {
     tud_init(BOARD_TUD_RHPORT);
 }
 
+// Microsecond timestamp of the last start of frame we observed, and whether this frame
+// already carried a report. sof_rd holds the frame number of the last SOF received and
+// updates whether or not the SOF interrupt is enabled, so polling it tracks the frame
+// without asking TinyUSB to take an extra interrupt every millisecond.
+static uint32_t last_sof_us = 0;
+static bool report_sent_this_frame = false;
+
 // The RP2040 raises a suspend interrupt after roughly 3ms of bus inactivity and, because
 // its TinyUSB port forces VBUS detection on, cannot tell a suspended bus apart from a
 // disconnected one (RP2040 datasheet 4.1.2.6.4). A brief glitch on the bus is therefore
@@ -86,7 +93,7 @@ void usbd_driver_init(usb_mode_t mode) {
 // without doing anything, and the host has no reason to send a resume for a suspend it
 // never initiated. The frame counter settles it: if start of frame packets keep coming
 // in, the bus is alive and the suspend was spurious, so drop the latch.
-static void check_spurious_suspend() {
+static void track_frame() {
     static uint16_t last_frame = 0;
 
     const uint16_t frame = (uint16_t)(usb_hw->sof_rd & USB_SOF_RD_COUNT_BITS);
@@ -94,6 +101,8 @@ static void check_spurious_suspend() {
         return;
     }
     last_frame = frame;
+    last_sof_us = time_us_32();
+    report_sent_this_frame = false;
 
     if (tud_suspended()) {
         dcd_event_bus_signal(BOARD_TUD_RHPORT, DCD_EVENT_RESUME, false);
@@ -101,37 +110,50 @@ static void check_spurious_suspend() {
 }
 
 void usbd_driver_task() {
-    check_spurious_suspend();
+    track_frame();
 
     tud_task();
 }
 
 usb_mode_t usbd_driver_get_mode() { return usbd_mode; }
 
-void usbd_driver_send_report(usb_report_t report) {
-    static const uint64_t interval_us = 900;
-    static uint64_t next_us = 0;
+// Marking an IN buffer as available in the last fifth of a full speed frame lets a late
+// IN token straddle the following start of frame, which the RP2040 answers with port
+// babble and a corrupt ACK. Errata 15 in the RP2040 datasheet; the hub disables a
+// babbling port, so the host drops the device, and the datasheet notes the resulting
+// data corruption can also lock the device up.
+//
+// TinyUSB carries a workaround but gates it on e15_is_bulkin_ep(), so it only ever
+// applies to bulk IN endpoints. Every controller mode here reports over an interrupt IN
+// endpoint, which is left unprotected, and reports used to be queued on a free running
+// 900us timer that drifted through the 1000us frame - so the arming point swept into the
+// danger window on about a fifth of all frames, continuously.
+//
+// Queue at most one report per frame and only in the safe part of it. That keeps arming
+// clear of the frame boundary, matches the 1ms bInterval the descriptors ask for instead
+// of over-arming against it, and hands the host the freshest possible data for the IN
+// token it is about to send.
+static const uint32_t frame_safe_window_us = 700;
 
-    const uint64_t now_us = to_us_since_boot(get_absolute_time());
-    if (now_us < next_us) {
-        return;
-    }
-    next_us += interval_us;
-    if (next_us < now_us) {
-        // Resync after a stall instead of catching up, which would send a burst of
-        // reports as fast as the main loop can produce them.
-        next_us = now_us + interval_us;
-    }
+void usbd_driver_send_report(usb_report_t report) {
+    track_frame();
 
     if (tud_suspended()) {
         // Only effective once a host has enabled remote wakeup, which it will not do
         // as long as the configuration descriptors don't advertise the capability.
-        // check_spurious_suspend() is what actually recovers a stuck suspend.
+        // track_frame() is what actually recovers a stuck suspend.
         tud_remote_wakeup();
     }
 
+    if (report_sent_this_frame || (time_us_32() - last_sof_us) > frame_safe_window_us) {
+        return;
+    }
+
     if (usbd_driver->send_report) {
-        usbd_driver->send_report(report);
+        // Only claim the frame once the report is actually on its way. A refused send
+        // means the previous transfer is still outstanding, and retrying on the next
+        // pass is still well inside the safe window.
+        report_sent_this_frame = usbd_driver->send_report(report);
     }
 }
 
